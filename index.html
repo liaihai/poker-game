@@ -23,7 +23,7 @@
     .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:200}
     .modal-box{background:white;border-radius:25px;padding:20px;width:90%;max-width:350px;text-align:center;color:#1e293b}
     .status-bar{background:rgba(0,0,0,0.3);padding:10px;border-radius:15px;margin:10px 0}
-    .code-area{font-size:0.8rem;background:rgba(255,255,255,0.2);padding:8px;border-radius:12px;margin:8px 0;word-break:break-all;max-height:120px;overflow-y:auto;user-select:text}
+    .code-area{font-size:0.8rem;background:rgba(255,255,255,0.2);padding:8px;border-radius:12px;margin:8px 0;word-break:break-all;max-height:120px;overflow-y:auto;user-select:all}
   </style>
 </head>
 <body>
@@ -45,6 +45,11 @@
   function compress(obj){ return LZString.compressToBase64(JSON.stringify(obj)); }
   function decompress(str){ return JSON.parse(LZString.decompressFromBase64(str)); }
 
+  // 去除字符串中的换行、空格等无效字符
+  function cleanCode(str) {
+    return str.replace(/[\s\n\r]/g, '');
+  }
+
   // 创建房间
   function hostGame(){
     if (pc) { pc.close(); pc = null; }
@@ -65,30 +70,34 @@
     pc.createOffer().then(o => pc.setLocalDescription(o)).catch(e => alert('创建房间失败'));
   }
 
-  // 房主界面：连接码 + 输入确认码区域
+  // 房主界面：连接码 + 粘贴确认码的区域
   function showHostCode(code){
     document.getElementById('app').innerHTML = `
       <h2>📡 连接码已生成</h2>
-      <p class="info">复制下方连接码，发给好友</p>
-      <div class="code-area" id="codeBox">${code}</div>
-      <button class="btn" id="copyBtn">📋 一键复制</button>
+      <p class="info">请长按下方文字 → 全选 → 复制，发给好友</p>
+      <div class="code-area">${code}</div>
+      <button class="btn" id="copyBtn">📋 一键复制（请确认完整）</button>
       <div style="margin:15px 0; border-top:1px solid rgba(255,255,255,0.3)"></div>
       <p class="info">收到好友的确认码后，粘贴到下方并点击【完成连接】</p>
-      <input class="input-box" id="answerInput" placeholder="粘贴确认码">
+      <input class="input-box" id="answerInput" placeholder="粘贴确认码（确保无换行）">
       <button class="btn secondary" id="finalBtn">✅ 完成连接</button>
     `;
     document.getElementById('copyBtn').addEventListener('click', ()=>{
-      navigator.clipboard.writeText(code).then(()=>alert('已复制，去微信粘贴给好友'));
+      navigator.clipboard.writeText(code).then(()=>alert('已复制，请确认复制内容不含换行或空格，然后发送给好友'));
     });
     document.getElementById('finalBtn').addEventListener('click', ()=>{
-      const ans = document.getElementById('answerInput').value.trim();
-      if (ans) completeConnection(ans);
+      const raw = document.getElementById('answerInput').value;
+      const ans = cleanCode(raw);
+      if (!ans) return alert('请输入确认码');
+      if (ans.length < 20) return alert('确认码太短，可能未完整复制');
+      completeConnection(ans);
     });
   }
 
   // 加入房间（好友）
   function joinGame(){
-    const code = document.getElementById('joinCode').value.trim();
+    const raw = document.getElementById('joinCode').value;
+    const code = cleanCode(raw);
     if (!code) return alert('请粘贴好友的连接码');
     try {
       const data = decompress(code);
@@ -107,33 +116,39 @@
       pc.setRemoteDescription({type:'offer', sdp: offerSDP})
         .then(() => pc.createAnswer())
         .then(a => pc.setLocalDescription(a))
-        .catch(e => alert('加入房间失败，请检查连接码'));
+        .catch(e => alert('加入房间失败，请检查连接码是否完整复制'));
     } catch (e) {
-      alert('连接码无效，请完整复制');
+      alert('连接码无效，请重新复制，确保没有遗漏字符');
     }
   }
 
-  // 好友界面：显示确认码，等待房主完成连接
+  // 好友界面：显示确认码
   function showJoinAnswer(code){
     document.getElementById('app').innerHTML = `
       <h2>🔗 确认码已生成</h2>
-      <p class="info">复制下方确认码，发回给房主</p>
-      <div class="code-area" id="answerBox">${code}</div>
-      <button class="btn" id="copyAnswerBtn">📋 一键复制</button>
+      <p class="info">请长按下方文字 → 全选 → 复制，发回给房主</p>
+      <div class="code-area">${code}</div>
+      <button class="btn" id="copyAnswerBtn">📋 一键复制（请确认完整）</button>
       <p class="info">发给房主后，等待连接…</p>
     `;
     document.getElementById('copyAnswerBtn').addEventListener('click', ()=>{
-      navigator.clipboard.writeText(code).then(()=>alert('已复制，发给房主即可'));
+      navigator.clipboard.writeText(code).then(()=>alert('已复制，确认无换行后发送给房主'));
     });
   }
 
-  // 房主收到确认码后调用
+  // 房主完成连接
   function completeConnection(code){
     try {
       const data = decompress(code);
       const answerSDP = data.answer;
-      pc.setRemoteDescription({type:'answer', sdp: answerSDP}).catch(e => alert('确认码无效'));
-    } catch (e) { alert('确认码格式错误'); }
+      if (!answerSDP) throw new Error('no answer SDP');
+      pc.setRemoteDescription({type:'answer', sdp: answerSDP})
+        .catch(e => {
+          alert('连接失败：SDP 设置错误，可能是确认码不完整。请让好友重新生成并复制。');
+        });
+    } catch (e) {
+      alert('确认码格式错误，请检查是否完整复制（不要有换行或多余字符）');
+    }
   }
 
   // 数据通道设置
@@ -141,7 +156,6 @@
     dc = ch;
     dc.onopen = () => {
       if (isHost) {
-        // 初始化游戏
         game.players[0].hand = []; game.players[1].hand = [];
         game.players[0].score = 0; game.players[1].score = 0;
         let deck = [];
