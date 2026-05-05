@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>扑克50点 · 联机对战</title>
+  <title>扑克50点 · 联机</title>
+  <!-- lz-string 压缩库 -->
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
   <style>
     *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;font-family:system-ui,-apple-system,sans-serif}
     body{background:#0a5c36;background-image:radial-gradient(circle at 50% 20%,#1e7b4f,#0a4529);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px}
@@ -22,7 +24,7 @@
     .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:200}
     .modal-box{background:white;border-radius:25px;padding:20px;width:90%;max-width:350px;text-align:center;color:#1e293b}
     .status-bar{background:rgba(0,0,0,0.3);padding:10px;border-radius:15px;margin:10px 0}
-    .big-code{font-size:0.8rem;background:rgba(255,255,255,0.2);padding:8px;border-radius:12px;margin:8px 0;word-break:break-all;max-height:80px;overflow-y:auto}
+    .code-area{font-size:0.8rem;background:rgba(255,255,255,0.2);padding:8px;border-radius:12px;margin:8px 0;word-break:break-all;max-height:120px;overflow-y:auto}
   </style>
 </head>
 <body>
@@ -30,120 +32,108 @@
 
 <script>
 (function(){
-  // ---------- 游戏规则 ----------
   const SUITS = ['♠','♥','♣','♦'];
   const RANK_MAP = {A:1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,J:-10,Q:0,K:'k'};
-  function isRed(s){return s==='♥'||s==='♦'}
-  function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+  const isRed = s => s==='♥'||s==='♦';
+  const shuffle = a => {for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
 
-  // ---------- 全局变量 ----------
-  let pc = null;           // RTCPeerConnection
-  let dc = null;           // DataChannel
-  let isHost = false;
-  let myIndex = 0;
-  let game = {
-    phase: 'lobby',
-    deck: [],
-    players: [{hand:[],score:0},{hand:[],score:0}],
-    turn: 0,
-    winner: null,
-    kingWait: false
-  };
-  let myHand = [];
-  let selectedIdx = null;
+  let pc, dc, isHost = false, myIndex = 0;
+  let game = { phase:'lobby', deck:[], players:[{hand:[],score:0},{hand:[],score:0}], turn:0, winner:null, kingWait:false };
+  let myHand = [], selIdx = null;
 
-  // ---------- WebRTC 连接 ----------
   const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
+  // 压缩/解压
+  function compress(obj){ return LZString.compressToBase64(JSON.stringify(obj)); }
+  function decompress(str){ return JSON.parse(LZString.decompressFromBase64(str)); }
+
+  // 创建房间
   function hostGame(){
-    isHost = true;
-    myIndex = 0;
+    isHost = true; myIndex = 0;
     pc = new RTCPeerConnection(rtcConfig);
     dc = pc.createDataChannel('game');
     setupDataChannel(dc);
-    
-    pc.onicecandidate = e => {
-      if (e.candidate) return; // 等所有候选收集完再显示
-      // 生成 offer 的描述（SDP + ICE 候选）
-      const offerDesc = btoa(JSON.stringify(pc.localDescription));
-      showHostCode(offerDesc);
-    };
 
-    pc.createOffer().then(offer => pc.setLocalDescription(offer));
+    pc.onicecandidate = e => {
+      if (e.candidate) return;
+      // 收集完毕，只提供 offer SDP
+      const offerSDP = pc.localDescription.sdp;
+      const compressed = compress({offer: offerSDP});
+      showHostCode(compressed);
+    };
+    pc.createOffer().then(o => pc.setLocalDescription(o));
   }
 
-  function showHostCode(offerCode){
+  function showHostCode(code){
     document.getElementById('app').innerHTML = `
-      <h2>📡 连接码已生成</h2>
-      <p class="info">长按下方文字 → 全选 → 复制 → 发给好友</p>
-      <div class="big-code" id="codeBox">${offerCode}</div>
+      <h2>📡 连接码（压缩后）</h2>
+      <p class="info">长按 → 全选 → 复制，发给好友</p>
+      <div class="code-area">${code}</div>
       <button class="btn" id="copyBtn">📋 一键复制</button>
-      <p class="info">等好友输入后，会自动进入游戏</p>
+      <p class="info">发给好友后，等对方回复确认码</p>
     `;
     document.getElementById('copyBtn').addEventListener('click', ()=>{
-      const code = document.getElementById('codeBox').textContent;
       navigator.clipboard.writeText(code).then(()=>alert('已复制，去微信粘贴给好友'));
     });
   }
 
+  // 加入房间
   function joinGame(){
     const code = document.getElementById('joinCode').value.trim();
     if (!code) return alert('请粘贴连接码');
     try {
-      const offerDesc = JSON.parse(atob(code));
+      const data = decompress(code);
+      const offerSDP = data.offer;
       pc = new RTCPeerConnection(rtcConfig);
-      pc.ondatachannel = e => {
-        dc = e.channel;
-        setupDataChannel(dc);
-      };
+      pc.ondatachannel = e => { dc = e.channel; setupDataChannel(dc); };
       pc.onicecandidate = e => {
         if (e.candidate) return;
-        // 生成 answer 的描述
-        const answerDesc = btoa(JSON.stringify(pc.localDescription));
-        showJoinAnswer(answerDesc);
+        const answerSDP = pc.localDescription.sdp;
+        const compressed = compress({answer: answerSDP});
+        showJoinAnswer(compressed);
       };
-      pc.setRemoteDescription(offerDesc).then(() => pc.createAnswer())
-        .then(answer => pc.setLocalDescription(answer));
+      pc.setRemoteDescription({type:'offer', sdp: offerSDP})
+        .then(() => pc.createAnswer())
+        .then(a => pc.setLocalDescription(a));
     } catch (e) {
-      alert('连接码格式错误，请检查复制完整');
+      alert('连接码无效或格式错误');
     }
   }
 
-  function showJoinAnswer(answerCode){
+  function showJoinAnswer(code){
     document.getElementById('app').innerHTML = `
-      <h2>🔗 请回复一段确认码</h2>
-      <p class="info">长按 → 复制 → 发给创建房间的好友</p>
-      <div class="big-code" id="answerBox">${answerCode}</div>
+      <h2>🔗 确认码（压缩后）</h2>
+      <p class="info">长按 → 复制 → 发给房主</p>
+      <div class="code-area">${code}</div>
       <button class="btn" id="copyAnswerBtn">📋 一键复制</button>
       <p class="info">发给对方后，等待连接…</p>
     `;
     document.getElementById('copyAnswerBtn').addEventListener('click', ()=>{
-      navigator.clipboard.writeText(answerCode).then(()=>alert('已复制，发给好友即可'));
+      navigator.clipboard.writeText(code).then(()=>alert('已复制，发给好友即可'));
     });
   }
 
-  function completeConnection(answerCode){
+  // 房主收到确认码
+  function completeConnection(){
+    const code = document.getElementById('answerCode').value.trim();
+    if (!code) return;
     try {
-      const answerDesc = JSON.parse(atob(answerCode));
-      pc.setRemoteDescription(answerDesc);
-    } catch(e) { alert('确认码错误'); }
+      const data = decompress(code);
+      const answerSDP = data.answer;
+      pc.setRemoteDescription({type:'answer', sdp: answerSDP});
+    } catch (e) { alert('确认码错误'); }
   }
 
-  function setupDataChannel(channel){
-    dc = channel;
+  function setupDataChannel(ch){
+    dc = ch;
     dc.onopen = () => {
       if (isHost) {
-        // 发牌开始
-        game.players[0].hand = []; game.players[1].hand = [];
-        game.players[0].score = 0; game.players[1].score = 0;
-        // 创建牌库
+        game.players[0].hand = []; game.players[1].hand = []; game.players[0].score = 0; game.players[1].score = 0;
         let deck = [];
         SUITS.forEach(s => ['A','2','3','4','5','6','7','8','9','10','J','Q','K'].forEach(r => deck.push({suit:s,rank:r})));
         game.deck = shuffle(deck);
-        // 每人5张
-        for (let i=0;i<5;i++) { game.players[0].hand.push(game.deck.pop()); game.players[1].hand.push(game.deck.pop()); }
-        // 骰子定先手
-        const d1 = Math.floor(Math.random()*6)+1, d2 = Math.floor(Math.random()*6)+1;
+        for (let i=0;i<5;i++){ game.players[0].hand.push(game.deck.pop()); game.players[1].hand.push(game.deck.pop()); }
+        const d1=Math.floor(Math.random()*6)+1, d2=Math.floor(Math.random()*6)+1;
         game.turn = d1>=d2 ? 0 : 1;
         game.phase = 'play';
         myHand = game.players[0].hand;
@@ -151,72 +141,55 @@
       }
       render();
     };
-    dc.onmessage = e => handleMessage(JSON.parse(e.data));
+    dc.onmessage = e => handleMsg(JSON.parse(e.data));
     dc.onclose = () => alert('连接断开');
   }
 
   function compressGame(){
-    return {
-      phase: game.phase,
-      deckCount: game.deck.length,
-      p0: game.players[0], p1: game.players[1],
-      turn: game.turn, winner: game.winner
-    };
+    return {phase:game.phase, deckCount:game.deck.length, p0:game.players[0], p1:game.players[1], turn:game.turn, winner:game.winner};
   }
+  function send(data){ if (dc && dc.readyState==='open') dc.send(JSON.stringify(data)); }
 
-  function handleMessage(msg){
+  function handleMsg(msg){
     if (msg.type === 'init'){
-      game.phase = msg.game.phase;
-      game.players[0] = msg.game.p0;
-      game.players[1] = msg.game.p1;
-      game.turn = msg.game.turn;
-      game.winner = msg.game.winner;
-      myHand = isHost ? game.players[0].hand : game.players[1].hand;
-      render();
-    } else if (msg.type === 'play'){
-      const p = isHost ? game.players[1] : game.players[0];
-      const card = p.hand[msg.idx];
-      p.hand.splice(msg.idx, 1);
-      const sc = card.rank === 'K' ? (msg.kVal || 0) : RANK_MAP[card.rank];
-      p.score += sc;
-      if (isHost) {
-        // 房主主持游戏
+      Object.assign(game, {
+        phase: msg.game.phase,
+        players: [msg.game.p0, msg.game.p1],
+        turn: msg.game.turn,
+        winner: msg.game.winner
+      });
+      myHand = myIndex===0 ? game.players[0].hand : game.players[1].hand;
+    } else if (msg.type === 'play' || msg.type === 'kingPick'){
+      const remoteIdx = isHost ? 1 : 0;
+      const p = game.players[remoteIdx];
+      if (msg.type === 'play'){
+        const card = p.hand[msg.idx];
+        p.hand.splice(msg.idx,1);
+        p.score += card.rank==='K' ? (msg.kVal||0) : RANK_MAP[card.rank];
+      } else {
+        p.score += msg.val;
+      }
+      if (isHost){
         fillHand(1);
-        if (p.score >= 50) { game.phase='over'; game.winner = '对手'; }
+        if (p.score >= 50){ game.phase='over'; game.winner = '对手'; }
         else { game.turn = 0; fillHand(0); }
         myHand = game.players[0].hand;
         send({type:'sync', game:compressGame()});
       }
-      render();
-    } else if (msg.type === 'kingPick'){
-      const p = isHost ? game.players[1] : game.players[0];
-      p.score += msg.val;
-      if (isHost) {
-        fillHand(1);
-        if (p.score >= 50) { game.phase='over'; game.winner = '对手'; }
-        else { game.turn = 0; fillHand(0); }
-        myHand = game.players[0].hand;
-        send({type:'sync', game:compressGame()});
-      }
-      render();
     } else if (msg.type === 'sync'){
       game.phase = msg.game.phase;
-      game.players[0] = msg.game.p0;
-      game.players[1] = msg.game.p1;
+      game.players = [msg.game.p0, msg.game.p1];
       game.turn = msg.game.turn;
       game.winner = msg.game.winner;
-      myHand = isHost ? game.players[0].hand : game.players[1].hand;
-      render();
+      myHand = myIndex===0 ? game.players[0].hand : game.players[1].hand;
     }
+    render();
   }
-
-  function send(data){ if (dc && dc.readyState==='open') dc.send(JSON.stringify(data)); }
 
   function fillHand(i){
     const p = game.players[i];
     while (p.hand.length < 5 && game.deck.length > 0) p.hand.push(game.deck.pop());
     if (game.deck.length === 0) {
-      // 重新洗牌
       let used = new Set();
       game.players.forEach(pl => pl.hand.forEach(c => used.add(c.suit+'|'+c.rank)));
       let newD = [];
@@ -224,6 +197,7 @@
         if (!used.has(s+'|'+r)) newD.push({suit:s,rank:r});
       }));
       game.deck = shuffle(newD);
+      while (p.hand.length < 5) p.hand.push(game.deck.pop());
     }
   }
 
@@ -232,80 +206,75 @@
     if (card.rank === 'K') {
       showKingModal(idx);
     } else {
-      const p = isHost ? game.players[0] : game.players[1];
+      const p = myIndex===0 ? game.players[0] : game.players[1];
       p.hand.splice(idx,1);
       p.score += RANK_MAP[card.rank];
-      if (isHost) {
+      if (isHost){
         fillHand(0);
-        if (p.score >= 50) { game.phase='over'; game.winner = '你'; }
+        if (p.score >= 50){ game.phase='over'; game.winner = '你'; }
         else { game.turn = 1; fillHand(1); }
         myHand = game.players[0].hand;
         send({type:'sync', game:compressGame()});
       } else {
         send({type:'play', idx, kVal:0});
       }
-      selectedIdx = null;
+      selIdx = null;
       render();
     }
   }
 
   function showKingModal(idx){
     game.kingWait = true;
-    let modal = document.createElement('div'); modal.className='modal-overlay';
-    modal.innerHTML = `<div class="modal-box"><h3>👑 K效果</h3><input type="range" id="kSlider" min="-10" max="10" value="0"><span id="kValue" style="font-size:2rem;">0</span>
+    let m = document.createElement('div'); m.className='modal-overlay';
+    m.innerHTML = `<div class="modal-box"><h3>👑 K效果</h3><input type="range" id="kSlider" min="-10" max="10" value="0"><span id="kValue" style="font-size:2rem;">0</span>
     <br><button class="btn" id="confirmK">确认</button><button class="btn secondary" id="cancelK">取消</button></div>`;
-    document.body.appendChild(modal);
+    document.body.appendChild(m);
     document.getElementById('kSlider').addEventListener('input', e => document.getElementById('kValue').textContent = e.target.value);
     document.getElementById('confirmK').addEventListener('click', ()=>{
       const val = parseInt(document.getElementById('kSlider').value);
-      document.body.removeChild(modal);
+      document.body.removeChild(m);
       game.kingWait = false;
-      const p = isHost ? game.players[0] : game.players[1];
+      const p = myIndex===0 ? game.players[0] : game.players[1];
       p.hand.splice(idx,1);
       p.score += val;
-      if (isHost) {
+      if (isHost){
         fillHand(0);
-        if (p.score >= 50) { game.phase='over'; game.winner = '你'; }
+        if (p.score >= 50){ game.phase='over'; game.winner = '你'; }
         else { game.turn = 1; fillHand(1); }
         myHand = game.players[0].hand;
         send({type:'sync', game:compressGame()});
       } else {
         send({type:'kingPick', val});
       }
-      selectedIdx = null;
+      selIdx = null;
       render();
     });
     document.getElementById('cancelK').addEventListener('click', ()=>{
-      document.body.removeChild(modal);
-      game.kingWait = false;
-      render();
+      document.body.removeChild(m); game.kingWait = false; render();
     });
   }
 
-  // ---------- 渲染 ----------
   function renderLobby(){
     document.getElementById('app').innerHTML = `
       <h2>🃏 扑克50点</h2>
-      <p class="info">无需服务器，手动交换连接码</p>
+      <p class="info">A-10:+点数 J:-10 Q:0 K:自选±10</p>
       <button class="btn" id="hostBtn">🏠 创建房间</button>
-      <div style="margin:15px 0; border-top:1px solid rgba(255,255,255,0.3)"></div>
-      <input class="input-box" id="joinCode" placeholder="粘贴连接码">
+      <div style="margin:10px 0"></div>
+      <input class="input-box" id="joinCode" placeholder="粘贴好友的连接码">
       <button class="btn secondary" id="joinBtn">🚪 加入房间</button>
-      <p class="info">如果已收到对方确认码，请点击下方</p>
-      <input class="input-box" id="answerCode" placeholder="粘贴确认码">
+      <div style="margin:10px 0; border-top:1px solid rgba(255,255,255,0.3)"></div>
+      <input class="input-box" id="answerCode" placeholder="粘贴确认码（房主专用）">
       <button class="btn secondary" id="finalBtn">✅ 完成连接</button>
+      <p class="info">⚠️ 请在手机浏览器中打开（如Safari）</p>
     `;
     document.getElementById('hostBtn').addEventListener('click', hostGame);
     document.getElementById('joinBtn').addEventListener('click', joinGame);
-    document.getElementById('finalBtn').addEventListener('click', ()=>{
-      const ans = document.getElementById('answerCode').value.trim();
-      if (ans) completeConnection(ans);
-    });
+    document.getElementById('finalBtn').addEventListener('click', completeConnection);
   }
 
   function render(){
     const app = document.getElementById('app');
-    if (game.phase === 'lobby') { renderLobby(); return; }
+    if (game.phase === 'lobby'){ renderLobby(); return; }
     if (game.phase === 'over'){
       app.innerHTML = `<h2>${game.winner ? '🏆 '+game.winner+' 获胜！' : '🤝 平局'}</h2>
       <p>你的分数：${game.players[myIndex].score}</p>
@@ -313,31 +282,22 @@
       return;
     }
     const turn = game.turn === myIndex;
-    const opIdx = myIndex === 0 ? 1 : 0;
-    let html = `<div class="status-bar">🃏 牌库 ${isHost?game.deck.length:'?'} 张 | ${turn?'👉 你的回合':'⏳ 对方回合'}</div>
-    <div style="display:flex;gap:10px;margin:10px0">
-      <div style="flex:1"><b>你</b><br>${game.players[myIndex].score}</div>
-      <div style="flex:1"><b>对手</b><br>${game.players[opIdx].score}</div>
-    </div>
-    <div>📋 我的手牌</div><div class="cards-row">`;
-    myHand.forEach((c,i)=>{
-      html += `<div class="card-item${isRed(c.suit)?' red':''}${selectedIdx===i?' selected':''}" data-idx="${i}">
-        <div>${c.suit}</div><div>${c.rank}</div></div>`;
-    });
-    html += `</div><div>🙈 对手手牌 (${game.players[opIdx].hand.length}张)</div><div class="cards-row">`;
-    game.players[opIdx].hand.forEach(()=> html += '<div class="card-item" style="background:#2d3a4a;color:white">🂠</div>');
-    html += `</div><button class="btn" id="playBtn" ${turn&&!game.kingWait?'':'disabled'}>✅ 出牌</button>`;
-    app.innerHTML = html;
-    document.querySelectorAll('.card-item[data-idx]').forEach(el => {
-      el.addEventListener('click', function(){
-        if (!turn || game.kingWait) return;
-        const idx = parseInt(this.dataset.idx);
-        selectedIdx = idx;
-        playCard(idx);
-      });
-    });
+    const op = myIndex===0?1:0;
+    let h = `<div class="status-bar">🃏 牌库 ${isHost?game.deck.length:'?'} 张 | ${turn?'👉 你的回合':'⏳ 对方回合'}</div>
+    <div style="display:flex;gap:10px;margin:10px0"><div style="flex:1"><b>你</b><br>${game.players[myIndex].score}</div><div style="flex:1"><b>对手</b><br>${game.players[op].score}</div></div>
+    <div style="text-align:left">📋 我的手牌</div><div class="cards-row">`;
+    myHand.forEach((c,i)=> h += `<div class="card-item${isRed(c.suit)?' red':''}${selIdx===i?' selected':''}" data-idx="${i}"><div>${c.suit}</div><div>${c.rank}</div></div>`);
+    h += `</div><div style="text-align:left">🙈 对手手牌 (${game.players[op].hand.length}张)</div><div class="cards-row">`;
+    game.players[op].hand.forEach(()=> h += '<div class="card-item" style="background:#2d3a4a;color:white">🂠</div>');
+    h += `</div><button class="btn" id="playBtn" ${turn&&!game.kingWait?'':'disabled'}>✅ 出牌</button>`;
+    app.innerHTML = h;
+    document.querySelectorAll('.card-item[data-idx]').forEach(el => el.addEventListener('click', function(){
+      if (!turn || game.kingWait) return;
+      selIdx = parseInt(this.dataset.idx);
+      playCard(selIdx);
+    }));
     document.getElementById('playBtn')?.addEventListener('click', ()=>{
-      if (selectedIdx!=null && turn && !game.kingWait) playCard(selectedIdx);
+      if (selIdx!=null && turn && !game.kingWait) playCard(selIdx);
     });
   }
 
