@@ -26,6 +26,7 @@
     .slider-row input[type=range]{flex:1}
     .big-num{font-size:2rem;font-weight:bold;min-width:50px}
     .status-bar{background:rgba(0,0,0,0.3);padding:10px;border-radius:15px;margin:10px 0}
+    .room-id{font-size:1.5rem;font-weight:bold;color:#fcd34d;background:rgba(0,0,0,0.4);padding:8px 20px;border-radius:15px;display:inline-block;margin:10px 0;letter-spacing:2px}
   </style>
 </head>
 <body>
@@ -33,13 +34,16 @@
 
 <script>
 (function(){
-  var peer=null,conn=null,myId='',peerId='',isHost=!1,myIndex=0,game={phase:'lobby',deck:[],p:[{hand:[],score:0},{hand:[],score:0}],turn:0,dice:[],winner:null,kingWait:!1},myHand=[],selIdx=null;
+  var peer=null,conn=null,myId='',peerId='',isHost=!1,myIndex=0;
+  var game={phase:'lobby',deck:[],p:[{hand:[],score:0},{hand:[],score:0}],turn:0,dice:[],winner:null,kingWait:!1};
+  var myHand=[],selIdx=null;
 
   var $=function(id){return document.getElementById(id)};
   var S=['♠','♥','♣','♦'];
   var RM={A:1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,J:-10,Q:0,K:'k'};
   function red(s){return s==='♥'||s==='♦'}
   function shuf(a){for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t}return a}
+  
   function newDeck(s){
     var set=new Set();
     s.p.forEach(function(x){x.hand.forEach(function(c){set.add(c.suit+'|'+c.rank)})});
@@ -51,43 +55,70 @@
   function fill(s,i){var p=s.p[i];while(p.hand.length<5){if(s.deck.length===0)newDeck(s);p.hand.push(draw(s))}}
   function score(c){return c.rank==='K'?'k':RM[c.rank]}
   function sync(){myHand=game.p[myIndex].hand}
+  
   function send(data){if(conn)conn.send(data)}
+  
   function doPlay(idx,kVal){
     var p=game.p[myIndex],c=p.hand[idx];
     p.hand.splice(idx,1);
     var sc=score(c);
     p.score+=(sc==='k'?kVal:sc);
-    if(isHost){fill(game,myIndex);if(p.score>=50){game.phase='over';game.winner=myIndex===0?'对手':'你'}else{game.turn=game.turn===0?1:0;fill(game,game.turn)}}
+    if(isHost){
+      fill(game,myIndex);
+      if(p.score>=50){
+        game.phase='over';
+        game.winner=myIndex===0?'对手':'你';
+      }else{
+        game.turn=game.turn===0?1:0;
+        fill(game,game.turn);
+      }
+    }
     game.kingWait=!1;selIdx=null;sync();
     if(isHost)send({type:'sync',g:{phase:game.phase,deckN:game.deck.length,p:game.p,turn:game.turn,winner:game.winner}});
     render();
   }
+
   function host(){
     var id=Math.random().toString(36).substring(2,8);
     myId=id;isHost=!0;myIndex=0;
-    peer=new Peer(id,{host:'0.peerjs.com',port:443,secure:!0});
+    peer=new Peer(id,{
+      host:'0.peerjs.com',
+      port:443,
+      secure:true,
+      debug:0
+    });
     peer.on('open',function(){
-      renderLobby('✅ 房间已创建<br>复制以下ID发给好友：<br><b style="font-size:1.3rem;">'+id+'</b>');
+      document.getElementById('app').innerHTML='<h2>🃏 扑克50点</h2><p>✅ 房间已创建</p><div class="room-id">'+id+'</div><p class="info">👆 把上面的ID发给好友</p><p class="info">等待对方加入...</p>';
     });
     peer.on('connection',function(c){
-      conn=c;connected();
+      conn=c;
+      connected();
     });
     peer.on('error',function(e){
-      if(e.type==='peer-unavailable')renderLobby('❌ 对方未找到，请刷新重试');
-      else renderLobby('❌ 错误: '+e.type);
+      document.getElementById('app').innerHTML='<h2>❌ 连接出错</h2><p>'+e.type+'</p><p>请刷新页面重试</p><button class="btn" onclick="location.reload()">🔄 刷新</button>';
     });
   }
+
   function join(){
-    var id=$('joinId').value.trim();
-    if(!id)return;
+    var id=document.getElementById('joinId').value.trim();
+    if(!id){alert('请粘贴好友的ID');return;}
     peerId=id;isHost=!1;myIndex=1;
-    peer=new Peer();
+    peer=new Peer({
+      host:'0.peerjs.com',
+      port:443,
+      secure:true,
+      debug:0
+    });
     peer.on('open',function(){
-      conn=peer.connect(id,{reliable:!0});
+      document.getElementById('app').innerHTML='<h2>🔗 正在连接...</h2><p>ID: '+id+'</p>';
+      conn=peer.connect(id,{reliable:true});
       conn.on('open',function(){connected()});
     });
-    peer.on('error',function(e){renderLobby('❌ 连接失败，请检查ID是否正确')});
+    peer.on('error',function(e){
+      document.getElementById('app').innerHTML='<h2>❌ 连接失败</h2><p>请确认ID正确且对方已创建房间</p><button class="btn" onclick="location.reload()">🔄 返回</button>';
+    });
   }
+
   function connected(){
     setupConn();
     if(isHost){
@@ -102,74 +133,128 @@
     }
     render();
   }
+
   function setupConn(){
     conn.on('data',function(d){
       if(d.type==='sync'){
         game.phase=d.g.phase;game.turn=d.g.turn;game.winner=d.g.winner;
         game.p[0].score=d.g.p[0].score;game.p[1].score=d.g.p[1].score;
-        if(isHost)return;
-        game.p[0].hand=d.g.p[0].hand;game.p[1].hand=d.g.p[1].hand;
+        if(!isHost){
+          game.p[0].hand=d.g.p[0].hand;game.p[1].hand=d.g.p[1].hand;
+        }
         sync();render();
       }else if(d.type==='play'){
         var p=game.p[1],c=p.hand[d.idx];
         p.hand.splice(d.idx,1);
         p.score+=(score(c)==='k'?d.kVal:RM[c.rank]);
-        if(isHost){fill(game,1);if(p.score>=50){game.phase='over';game.winner='对手'}else{game.turn=0;fill(game,0)}}
-        sync();
-        if(isHost)send({type:'sync',g:{phase:game.phase,deckN:game.deck.length,p:game.p,turn:game.turn,winner:game.winner}});
+        if(isHost){
+          fill(game,1);
+          if(p.score>=50){game.phase='over';game.winner='对手';}
+          else{game.turn=0;fill(game,0);}
+          sync();
+          send({type:'sync',g:{phase:game.phase,deckN:game.deck.length,p:game.p,turn:game.turn,winner:game.winner}});
+        }
         render();
       }else if(d.type==='kingPick'){
         game.p[1].score+=d.val;
-        if(isHost){fill(game,1);if(game.p[1].score>=50){game.phase='over';game.winner='对手'}else{game.turn=0;fill(game,0)}}
-        sync();
-        if(isHost)send({type:'sync',g:{phase:game.phase,deckN:game.deck.length,p:game.p,turn:game.turn,winner:game.winner}});
+        if(isHost){
+          fill(game,1);
+          if(game.p[1].score>=50){game.phase='over';game.winner='对手';}
+          else{game.turn=0;fill(game,0);}
+          sync();
+          send({type:'sync',g:{phase:game.phase,deckN:game.deck.length,p:game.p,turn:game.turn,winner:game.winner}});
+        }
         render();
       }
     });
-    conn.on('close',function(){renderLobby('❌ 连接断开，请刷新重试')});
+    conn.on('close',function(){
+      document.getElementById('app').innerHTML='<h2>❌ 连接断开</h2><button class="btn" onclick="location.reload()">🔄 重新开始</button>';
+    });
   }
-  function renderLobby(msg){
-    document.getElementById('app').innerHTML='<h2>🃏 扑克50点</h2><p class="info">'+msg+'</p>'+
-      '<button class="btn" onclick="host()">🏠 创建房间</button>'+
-      '<input class="input-box" id="joinId" placeholder="粘贴对方ID"><button class="btn secondary" onclick="join()">🚪 加入房间</button>';
+
+  function showKing(i){
+    var m=document.createElement('div');m.className='modal-overlay';
+    m.innerHTML='<div class="modal-box"><h3>👑 选择K的效果</h3><p>加减范围：-10 ~ +10</p><div class="slider-row"><input type="range" id="kSl" min="-10" max="10" value="0"><span class="big-num" id="kNum">0</span></div><button class="btn" id="kOk">确认</button><button class="btn secondary" id="kCancel" style="margin-top:5px">取消</button></div>';
+    document.body.appendChild(m);
+    document.getElementById('kSl').addEventListener('input',function(){document.getElementById('kNum').textContent=this.value});
+    document.getElementById('kOk').addEventListener('click',function(){
+      var v=parseInt(document.getElementById('kSl').value);
+      document.body.removeChild(m);
+      doPlay(i,v);
+      if(!isHost)send({type:'kingPick',val:v});
+    });
+    document.getElementById('kCancel').addEventListener('click',function(){
+      document.body.removeChild(m);
+      game.kingWait=!1;selIdx=null;render();
+    });
   }
+
+  // 全局函数暴露
+  window.host=host;
+  window.join=join;
+
+  function renderLobby(){
+    document.getElementById('app').innerHTML='<h2>🃏 扑克50点</h2><p class="info">A-10:+点数 J:-10 Q:0 K:自选±10<br>分数达到50即输</p>'+
+      '<button class="btn" id="hostBtn">🏠 创建房间</button>'+
+      '<input class="input-box" id="joinId" placeholder="粘贴好友房间ID">'+
+      '<button class="btn secondary" id="joinBtn">🚪 加入房间</button>'+
+      '<p class="info" style="margin-top:15px">👥 两人各自打开此页面即可联机</p>';
+    document.getElementById('hostBtn').addEventListener('click',host);
+    document.getElementById('joinBtn').addEventListener('click',join);
+  }
+
   function render(){
     var app=document.getElementById('app');
-    if(game.phase==='lobby'){renderLobby('等待中...');return}
+    if(game.phase==='lobby'){renderLobby();return;}
     if(game.phase==='over'){
-      app.innerHTML='<h2>'+(game.winner?'🏆 '+game.winner+' 获胜！':'🤝 平局')+'</h2><p>你的分数: '+game.p[myIndex].score+'</p><button class="btn" onclick="location.reload()">🔄 再来一局</button>';
+      app.innerHTML='<h2>'+(game.winner?'🏆 '+game.winner+' 获胜！':'🤝 平局')+'</h2><p style="font-size:1.2rem">你的分数: <b>'+game.p[myIndex].score+'</b></p><button class="btn" onclick="location.reload()">🔄 再来一局</button>';
       return;
     }
     var turn=game.turn===myIndex,op=myIndex===0?1:0;
     var h='<div class="status-bar">🃏 牌库: '+(isHost?game.deck.length:'?')+'张 | '+(turn?'👉 你的回合':'⏳ 对方回合')+'</div>';
-    h+='<div style="display:flex;gap:10px;margin:10px 0"><div style="flex:1;background:rgba(0,0,0,0.3);border-radius:15px;padding:8px"><b>你</b><br>'+game.p[myIndex].score+'</div><div style="flex:1;background:rgba(0,0,0,0.3);border-radius:15px;padding:8px"><b>对手</b><br>'+game.p[op].score+'</div></div>';
-    h+='<div><b>📋 我的手牌</b></div><div class="cards-row">';
+    h+='<div style="display:flex;gap:10px;margin:10px 0"><div style="flex:1;background:rgba(0,0,0,0.3);border-radius:15px;padding:8px"><b>你</b><br><span style="font-size:1.8rem;font-weight:bold;color:#fcd34d">'+game.p[myIndex].score+'</span></div><div style="flex:1;background:rgba(0,0,0,0.3);border-radius:15px;padding:8px"><b>对手</b><br><span style="font-size:1.8rem;font-weight:bold;color:#fcd34d">'+game.p[op].score+'</span></div></div>';
+    h+='<div style="text-align:left;margin:5px 0"><b>📋 我的手牌</b></div><div class="cards-row">';
     myHand.forEach(function(c,i){
-      h+='<div class="card-item'+(red(c.suit)?' red':'')+(selIdx===i?' selected':'')+'" data-i="'+i+'"><div>'+c.suit+'</div><div>'+c.rank+'</div></div>';
+      h+='<div class="card-item'+(red(c.suit)?' red':'')+(selIdx===i?' selected':'')+'" data-i="'+i+'"><div style="font-size:1.6rem">'+c.suit+'</div><div>'+c.rank+'</div></div>';
     });
-    h+='</div><div><b>🙈 对手手牌</b></div><div class="cards-row">';
-    game.p[op].hand.forEach(function(){h+='<div class="card-item" style="background:#2d3a4a;color:white">🂠</div>'});
-    h+='</div><button class="btn" '+(turn&&!game.kingWait?'':'disabled')+' id="playBtn">✅ 出牌</button>';
+    h+='</div><div style="text-align:left;margin:5px 0"><b>🙈 对手手牌 ('+game.p[op].hand.length+'张)</b></div><div class="cards-row">';
+    game.p[op].hand.forEach(function(){h+='<div class="card-item" style="background:#2d3a4a;color:white;font-size:1.6rem">🂠</div>'});
+    h+='</div><button class="btn" id="playBtn" '+(turn&&!game.kingWait?'':'disabled')+'>✅ 出牌</button>';
     app.innerHTML=h;
-    document.querySelectorAll('.card-item[data-i]').forEach(function(el){
+    
+    var cards=document.querySelectorAll('.card-item[data-i]');
+    cards.forEach(function(el){
       el.addEventListener('click',function(){
         if(!turn||game.kingWait)return;
         var i=parseInt(this.dataset.i);
-        if(score(myHand[i])==='k'){selIdx=i;showKing(i)}else{selIdx=i;doPlay(i,0);
-          if(!isHost)send({type:'play',idx:i,kVal:0});}
+        selIdx=i;
+        if(score(myHand[i])==='k'){
+          game.kingWait=!0;
+          showKing(i);
+        }else{
+          doPlay(i,0);
+          if(!isHost)send({type:'play',idx:i,kVal:0});
+        }
       });
     });
-    $('playBtn')&&$('playBtn').addEventListener('click',function(){if(selIdx!=null&&!game.kingWait){doPlay(selIdx,0);if(!isHost)send({type:'play',idx:selIdx,kVal:0})}});
+    
+    var playBtn=document.getElementById('playBtn');
+    if(playBtn){
+      playBtn.addEventListener('click',function(){
+        if(selIdx!=null&&!game.kingWait&&turn){
+          if(score(myHand[selIdx])==='k'){
+            game.kingWait=!0;
+            showKing(selIdx);
+          }else{
+            doPlay(selIdx,0);
+            if(!isHost)send({type:'play',idx:selIdx,kVal:0});
+          }
+        }
+      });
+    }
   }
-  function showKing(i){
-    var m=document.createElement('div');m.className='modal-overlay';
-    m.innerHTML='<div class="modal-box"><h3>👑 K效果</h3><div class="slider-row"><input type="range" id="kSl" min="-10" max="10" value="0"><span class="big-num" id="kNum">0</span></div><button class="btn" id="kOk">确认</button><button class="btn secondary" id="kCancel">取消</button></div>';
-    document.body.appendChild(m);
-    $('kSl').addEventListener('input',function(){$('kNum').textContent=this.value});
-    $('kOk').addEventListener('click',function(){var v=parseInt($('kSl').value);document.body.removeChild(m);doPlay(i,v);if(!isHost)send({type:'kingPick',val:v})});
-    $('kCancel').addEventListener('click',function(){document.body.removeChild(m);game.kingWait=!1;selIdx=null;render()});
-  }
-  renderLobby('双人对战 · 50分即输');
+
+  renderLobby();
 })();
 </script>
 </body>
